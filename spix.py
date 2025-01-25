@@ -124,20 +124,16 @@ class SpixInterpreter:
     def evaluate_value(self, value):
         value = value.strip()
 
-        # Handle numbers
         if value.isdigit():
             return int(value)
 
-        # Handle string literals
         if (value.startswith('"') and value.endswith('"')) or \
            (value.startswith("'") and value.endswith("'")):
             return value[1:-1]
 
-        # Handle variables
         if value in self.variables:
             return self.variables[value]
 
-        # Handle integrated package methods
         if '.' in value:
             parts = value.split('.')
             if parts[0] in self.integrated_packages:
@@ -151,17 +147,14 @@ class SpixInterpreter:
 
     async def parse_line(self, line, bot):
         line = line.strip()
-        
-        # Skip empty lines and comments
+
         if not line or line.startswith('//'):
             return
 
-        # Configuration start
         if re.match(self.PATTERNS['CONFIGURATION'], line):
             self.parsing_bot_config = True
             return
 
-        # Bot configuration parsing
         if self.parsing_bot_config:
             # Prefix configuration
             prefix_match = re.match(self.PATTERNS['PREFIX'], line)
@@ -169,56 +162,47 @@ class SpixInterpreter:
                 self.bot_config.set_prefix(prefix_match.group(1))
                 return
 
-            # Owners configuration
             owners_match = re.match(self.PATTERNS['OWNERS'], line)
             if owners_match:
                 owners = [o.strip().strip('"') for o in owners_match.group(1).split(',')]
                 self.bot_config.set_owners(*owners)
                 return
 
-            # Intents configuration
             intents_match = re.match(self.PATTERNS['INTENTS'], line)
             if intents_match:
                 self.bot_config.set_intents(intents_match.group(1))
                 return
 
-            # Debug configuration
             debug_match = re.match(self.PATTERNS['DEBUG'], line)
             if debug_match:
                 self.bot_config.set_debug(debug_match.group(1))
                 return
 
-            # Activity configuration
             activity_match = re.match(self.PATTERNS['ACTIVITY'], line)
             if activity_match:
                 self.bot_config.set_activity(activity_match.group(1), activity_match.group(2))
                 return
 
-            # End of configuration
             if not line.startswith('let'):
                 self.parsing_bot_config = False
 
-        # Discord login
         login_match = re.match(self.PATTERNS['DISCORD_LOGIN'], line)
         if login_match:
             self.discord_token = self.evaluate_value(login_match.group(1))
             return
 
-        # Variable assignment
         let_match = re.match(self.PATTERNS['LET'], line)
         if let_match:
             name, value = let_match.groups()
             self.variables[name] = self.evaluate_value(value)
             return
 
-        # Say (print) statement
         say_match = re.match(self.PATTERNS['SAY'], line)
         if say_match:
             content = self.evaluate_value(say_match.group(1))
             print(content)
             return
 
-        # Package integration
         integrate_match = re.match(self.PATTERNS['INTEGRATE'], line)
         if integrate_match:
             package_name = integrate_match.group(1)
@@ -226,14 +210,12 @@ class SpixInterpreter:
             self.integrate_package(package_name, alias)
             return
 
-        # Make Command
         make_command_match = re.match(self.PATTERNS['MAKE_COMMAND'], line)
         if make_command_match:
             self.current_command = make_command_match.group(1)
             self.command_actions[self.current_command] = []
             return
 
-        # Command action: Send message
         send_match = re.match(self.PATTERNS['SEND'], line)
         if send_match and self.current_command:
             channel_id = int(send_match.group(1))
@@ -249,7 +231,6 @@ class SpixInterpreter:
             self.command_actions[self.current_command].append(send_action)
             return
 
-        # End Command
         end_match = re.match(self.PATTERNS['END'], line)
         if end_match and self.current_command:
             command_name = self.current_command
@@ -263,17 +244,13 @@ class SpixInterpreter:
             return
 
     async def execute(self, code):
-        # Parse the entire code
         lines = code.splitlines()
 
-        # Create the bot
         bot = DiscordBot(self.bot_config)
 
-        # Process each line
         for line in lines:
             await self.parse_line(line, bot)
 
-        # Login and run the bot
         if self.discord_token:
             try:
                 await bot.start(self.discord_token)
