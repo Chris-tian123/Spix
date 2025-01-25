@@ -1,0 +1,13 @@
+// This is a Spix Discord bot example
+let token be "MTA5MzgxOTQ0MjU4MTk5OTYzNg.G64IDU.QoW_-Mz6KGKwTXcZvA6m75TYGcrlGvyUoT17BM"
+
+discord.login(token)
+
+// Handle incoming messages
+discord.on.message
+if message.content is "hello"
+discord.send(message.channel, "Hello there!")
+say("Bot responded to hello", <green>)
+
+let customChannel be "1302512727167860829"
+discord.send(customChannel, "Bot is online!")
