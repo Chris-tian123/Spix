@@ -1,197 +1,284 @@
 import re
 import sys
+import os
+import importlib
+import asyncio
+import datetime
+import traceback
+import inspect
+
 import discord
 from discord.ext import commands
-import asyncio
 from termcolor import colored
+
+class SpixBotConfiguration:
+    def __init__(self):
+        self.prefix = "$"
+        self.owner_ids = []
+        self.intents = discord.Intents.default()
+        self.debug = False
+        self.mentions = discord.AllowedMentions(
+            users=True, 
+            everyone=False, 
+            replied_user=False, 
+            roles=False
+        )
+        self.activity = None
+        self.help_command = None
+
+    def set_prefix(self, prefix):
+        self.prefix = prefix
+
+    def set_owners(self, *owners):
+        self.owner_ids = [int(owner) if owner.isdigit() else owner for owner in owners]
+
+    def set_intents(self, intent_type):
+        if intent_type.lower() == 'all':
+            self.intents = discord.Intents.all()
+        else:
+            self.intents = discord.Intents.default()
+
+    def set_debug(self, debug_status):
+        self.debug = debug_status.lower() == 'on'
+
+    def set_mentions(self, **kwargs):
+        self.mentions = discord.AllowedMentions(
+            users=kwargs.get('users', True),
+            everyone=kwargs.get('everyone', False),
+            replied_user=kwargs.get('replied_user', False),
+            roles=kwargs.get('roles', False)
+        )
+
+    def set_activity(self, activity_type, name):
+        activity_types = {
+            'watching': discord.ActivityType.watching,
+            'playing': discord.ActivityType.playing,
+            'listening': discord.ActivityType.listening,
+            'streaming': discord.ActivityType.streaming
+        }
+        self.activity = discord.Activity(
+            type=activity_types.get(activity_type.lower(), discord.ActivityType.watching), 
+            name=name
+        )
+
+class DiscordBot(commands.AutoShardedBot):
+    def __init__(self, config):
+        intents = config.intents
+        intents.message_content = True
+        super().__init__(
+            command_prefix=config.prefix, 
+            activity=config.activity, 
+            intents=intents,  
+            owner_ids=set(config.owner_ids) if config.owner_ids else None,  
+            enable_debug_events=config.debug,
+            allowed_mentions=config.mentions
+        )
+        self.config = config
+
+    async def on_ready(self):
+        print(colored(f"Bot logged in as {self.user.name} (ID: {self.user.id})", "green"))
+
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+
+        await self.process_commands(message)
 
 class SpixInterpreter:
     PATTERNS = {
-        'LET': r'^let\s+(\w+)\s+be\s+(.+)$',
-        'IF': r'^if\s+(\w+)\s+is\s+(.+)$',
-        'SAY': r'^say\((.*?)(?:,\s*<(\w+)>)?\)$',
-        'STRING': r'^\"(.*)\"$',
         'DISCORD_LOGIN': r'^discord\.login\((.*?)\)$',
-        'DISCORD_SEND': r'^discord\.send\((.*?),\s*(.*?)\)$',
-        'MAKE_COMMAND': r'^\$make\s+command\s+\"(\w+)\"$',
-        'DEFINE_FUNCTION': r'^function\s+for\s+(\w+):$',
-        'MAKE_SLASHCOMMAND': r'^\$make\s+slashcommand\s+\"(\w+)\"$',
-        'DEFINE_SLASH_FUNCTION': r'^function\s+for\s+slash\s+\"(\w+)\":$'
+        'LET': r'^let\s+(\w+)\s+be\s+(.+)$',
+        'SAY': r'^say\((.*?)\)$',
+        'INTEGRATE': r'^integrate\s+(\w+)(?:\s+as\s+(\w+))?$',
+        'CONFIGURATION': r'^configuration\s+bot:$',
+        'PREFIX': r'^let\s+prefix\s+be\s+"(.*?)"$',
+        'OWNERS': r'^let\s+owner\s+be\s+(.+)$',
+        'INTENTS': r'^let\s+intents\s+be\s+(.+)$',
+        'DEBUG': r'^let\s+debug\s+be\s+(\w+)$',
+        'ACTIVITY': r'^let\s+activity\s+be\s+"(\w+)"\s+"(.*?)"$',
+        'MAKE_COMMAND': r'^\$make command\s+"(.*?)"$',
+        'SEND': r'^discord\.send\((\d+),\s+"(.*?)"\)$',
+        'END': r'^end$'
     }
 
     def __init__(self):
         self.variables = {}
-        self.commands = {}
-        self.slash_commands = {}
-        self.current_context = None
+        self.integrated_packages = {}
+        self.bot_config = SpixBotConfiguration()
+        self.discord_token = None
+        self.parsing_bot_config = False
+        self.current_command = None
+        self.command_actions = {}
 
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.guilds = True
-        intents.guild_messages = True
-        intents.dm_messages = True
-        intents.members = True
-        intents.presences = True
-
-        self.discord = commands.Bot(command_prefix='$', intents=intents)
-
-        @self.discord.event
-        async def on_ready():
-            print(colored('Discord bot logged in successfully!', 'green'))
-
-        @self.discord.event
-        async def on_command_error(ctx, error):
-            print(colored(f'Error: {str(error)}', 'red'))
+    def integrate_package(self, package_name, alias=None):
+        try:
+            module = importlib.import_module(package_name)
+            alias = alias or package_name
+            self.integrated_packages[alias] = module
+            print(colored(f'Successfully integrated package: {package_name} as {alias}', 'green'))
+            return module
+        except ImportError:
+            print(colored(f'Failed to integrate package: {package_name}', 'red'))
+            return None
 
     def evaluate_value(self, value):
-        if not value:
-            return value
-
         value = value.strip()
 
         # Handle numbers
         if value.isdigit():
             return int(value)
 
+        # Handle string literals
+        if (value.startswith('"') and value.endswith('"')) or \
+           (value.startswith("'") and value.endswith("'")):
+            return value[1:-1]
+
         # Handle variables
         if value in self.variables:
             return self.variables[value]
 
-        # Handle string literals
-        string_match = re.match(self.PATTERNS['STRING'], value)
-        if string_match:
-            return string_match.group(1)
+        # Handle integrated package methods
+        if '.' in value:
+            parts = value.split('.')
+            if parts[0] in self.integrated_packages:
+                try:
+                    module = self.integrated_packages[parts[0]]
+                    return getattr(module, parts[1])
+                except AttributeError:
+                    pass
 
         return value
 
-    async def parse_line(self, line):
+    async def parse_line(self, line, bot):
         line = line.strip()
+        
+        # Skip empty lines and comments
         if not line or line.startswith('//'):
             return
 
+        # Configuration start
+        if re.match(self.PATTERNS['CONFIGURATION'], line):
+            self.parsing_bot_config = True
+            return
+
+        # Bot configuration parsing
+        if self.parsing_bot_config:
+            # Prefix configuration
+            prefix_match = re.match(self.PATTERNS['PREFIX'], line)
+            if prefix_match:
+                self.bot_config.set_prefix(prefix_match.group(1))
+                return
+
+            # Owners configuration
+            owners_match = re.match(self.PATTERNS['OWNERS'], line)
+            if owners_match:
+                owners = [o.strip().strip('"') for o in owners_match.group(1).split(',')]
+                self.bot_config.set_owners(*owners)
+                return
+
+            # Intents configuration
+            intents_match = re.match(self.PATTERNS['INTENTS'], line)
+            if intents_match:
+                self.bot_config.set_intents(intents_match.group(1))
+                return
+
+            # Debug configuration
+            debug_match = re.match(self.PATTERNS['DEBUG'], line)
+            if debug_match:
+                self.bot_config.set_debug(debug_match.group(1))
+                return
+
+            # Activity configuration
+            activity_match = re.match(self.PATTERNS['ACTIVITY'], line)
+            if activity_match:
+                self.bot_config.set_activity(activity_match.group(1), activity_match.group(2))
+                return
+
+            # End of configuration
+            if not line.startswith('let'):
+                self.parsing_bot_config = False
+
         # Discord login
-        if line.startswith('discord.login'):
-            match = re.match(self.PATTERNS['DISCORD_LOGIN'], line)
-            if match:
-                token = self.evaluate_value(match.group(1))
-                if not token:
-                    print(colored('Error: No Discord token provided', 'red'))
-                    sys.exit(1)
-                try:
-                    asyncio.create_task(self.discord.start(token))
-                except Exception as e:
-                    print(colored(f'Failed to login to Discord: {str(e)}', 'red'))
-                    sys.exit(1)
-            return
-
-        # Discord send message
-        if line.startswith('discord.send'):
-            match = re.match(self.PATTERNS['DISCORD_SEND'], line)
-            if match:
-                channel_id = self.evaluate_value(match.group(1))
-                content = self.evaluate_value(match.group(2))
-                try:
-                    if channel_id == 'channel':
-                    channel_id = self.current_context.id
-                    channel = await self.discord.fetch_channel(int(channel_id))
-                    await channel.send(content)
-                except Exception as e:
-                    print(colored(f'Failed to send message: {str(e)}', 'red'))
-            return
-
-        # Create a text command
-        if re.match(self.PATTERNS['MAKE_COMMAND'], line):
-            match = re.match(self.PATTERNS['MAKE_COMMAND'], line)
-            if match:
-                command_name = match.group(1)
-                self.commands[command_name] = []
-
-                @self.discord.command(name=command_name)
-                async def dynamic_command(ctx):
-                    self.current_context = ctx.channel
-                    for cmd_line in self.commands[command_name]:
-                        await self.parse_line(cmd_line.replace('channel', str(ctx.channel.id)))
-            return
-
-        # Define a function for a text command
-        if re.match(self.PATTERNS['DEFINE_FUNCTION'], line):
-            match = re.match(self.PATTERNS['DEFINE_FUNCTION'], line)
-            if match:
-                command_name = match.group(1)
-                if command_name in self.commands:
-                    self.current_command = command_name
-            return
-
-        # Create a slash command
-        if re.match(self.PATTERNS['MAKE_SLASHCOMMAND'], line):
-            match = re.match(self.PATTERNS['MAKE_SLASHCOMMAND'], line)
-            if match:
-                slash_command_name = match.group(1)
-                self.slash_commands[slash_command_name] = []
-
-                @self.discord.tree.command(name=slash_command_name)
-                async def dynamic_slash_command(interaction: discord.Interaction):
-                    self.current_context = interaction.channel
-                    for cmd_line in self.slash_commands[slash_command_name]:
-                        await self.parse_line(cmd_line.replace('channel', str(interaction.channel.id)))
-                    await interaction.response.send_message("Command executed.", ephemeral=True)
-            return
-
-        # Define a function for a slash command
-        if re.match(self.PATTERNS['DEFINE_SLASH_FUNCTION'], line):
-            match = re.match(self.PATTERNS['DEFINE_SLASH_FUNCTION'], line)
-            if match:
-                slash_command_name = match.group(1)
-                if slash_command_name in self.slash_commands:
-                    self.current_slash_command = slash_command_name
-            return
-
-        # Add lines to the current text or slash command
-        if hasattr(self, 'current_command') and self.current_command in self.commands:
-            self.commands[self.current_command].append(line)
-            return
-
-        if hasattr(self, 'current_slash_command') and self.current_slash_command in self.slash_commands:
-            self.slash_commands[self.current_slash_command].append(line)
+        login_match = re.match(self.PATTERNS['DISCORD_LOGIN'], line)
+        if login_match:
+            self.discord_token = self.evaluate_value(login_match.group(1))
             return
 
         # Variable assignment
-        if line.startswith('let'):
-            match = re.match(self.PATTERNS['LET'], line)
-            if match:
-                name, value = match.groups()
-                self.variables[name] = self.evaluate_value(value)
+        let_match = re.match(self.PATTERNS['LET'], line)
+        if let_match:
+            name, value = let_match.groups()
+            self.variables[name] = self.evaluate_value(value)
             return
 
-        # Conditional statements
-        if line.startswith('if'):
-            match = re.match(self.PATTERNS['IF'], line)
-            if match:
-                var_name, value = match.groups()
-                return self.variables.get(var_name) == self.evaluate_value(value)
-            return False
+        # Say (print) statement
+        say_match = re.match(self.PATTERNS['SAY'], line)
+        if say_match:
+            content = self.evaluate_value(say_match.group(1))
+            print(content)
+            return
 
-        # Print statements
-        if line.startswith('say'):
-            match = re.match(self.PATTERNS['SAY'], line)
-            if match:
-                content, color = match.groups()
-                content = self.evaluate_value(content)
-                if color:
-                    print(colored(content, color.strip()))
+        # Package integration
+        integrate_match = re.match(self.PATTERNS['INTEGRATE'], line)
+        if integrate_match:
+            package_name = integrate_match.group(1)
+            alias = integrate_match.group(2)
+            self.integrate_package(package_name, alias)
+            return
+
+        # Make Command
+        make_command_match = re.match(self.PATTERNS['MAKE_COMMAND'], line)
+        if make_command_match:
+            self.current_command = make_command_match.group(1)
+            self.command_actions[self.current_command] = []
+            return
+
+        # Command action: Send message
+        send_match = re.match(self.PATTERNS['SEND'], line)
+        if send_match and self.current_command:
+            channel_id = int(send_match.group(1))
+            message = send_match.group(2)
+
+            async def send_action(ctx):
+                channel = bot.get_channel(channel_id)
+                if channel:
+                    await channel.send(message)
                 else:
-                    print(content)
+                    print(colored(f'Channel ID {channel_id} not found', 'red'))
+
+            self.command_actions[self.current_command].append(send_action)
+            return
+
+        # End Command
+        end_match = re.match(self.PATTERNS['END'], line)
+        if end_match and self.current_command:
+            command_name = self.current_command
+
+            @bot.command(name=command_name)
+            async def combined_action(ctx):
+                for action in self.command_actions[command_name]:
+                    await action(ctx)
+
+            self.current_command = None
+            return
 
     async def execute(self, code):
+        # Parse the entire code
         lines = code.splitlines()
-        is_conditional_block = False
 
+        # Create the bot
+        bot = DiscordBot(self.bot_config)
+
+        # Process each line
         for line in lines:
-            if line.strip().startswith('if'):
-                is_conditional_block = await self.parse_line(line)
-            elif is_conditional_block or not line.strip().startswith('if'):
-                await self.parse_line(line)
-                is_conditional_block = False
+            await self.parse_line(line, bot)
+
+        # Login and run the bot
+        if self.discord_token:
+            try:
+                await bot.start(self.discord_token)
+            except Exception as e:
+                print(colored(f'Failed to start bot: {str(e)}', 'red'))
 
 async def main():
     if len(sys.argv) < 2:
@@ -206,6 +293,7 @@ async def main():
             await interpreter.execute(code)
     except Exception as e:
         print(colored(f'Error: {str(e)}', 'red'))
+        traceback.print_exc()
         sys.exit(1)
 
 if __name__ == '__main__':
