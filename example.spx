@@ -1,13 +1,12 @@
-// This is a Spix Discord bot example
-let token be "MTA5MzgxOTQ0MjU4MTk5OTYzNg.G64IDU.QoW_-Mz6KGKwTXcZvA6m75TYGcrlGvyUoT17BM"
+configuration bot:
+    let prefix be "$"
+    let owner be "1234567890"
+    let intents be "all"
+    let debug be "on"
+    let activity be "watching" "you re so skibidi"
+    
+discord.login("Token")
 
-discord.login(token)
-
-// Handle incoming messages
-discord.on.message
-if message.content is "hello"
-discord.send(message.channel, "Hello there!")
-say("Bot responded to hello", <green>)
-
-let customChannel be "1302512727167860829"
-discord.send(customChannel, "Bot is online!")
+$make command "ping"
+    discord.send(1302512727167860829, "pong!")
+end
