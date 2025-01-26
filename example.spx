@@ -8,5 +8,8 @@ configuration bot:
 discord.login("Token")
 
 $make command "ping"
-    discord.send(1302512727167860829, "pong!")
+    discord.send(channel, "pong!")
+end
+$make slash-command "hello":
+  discord.send(channel, "Hello, world!")
 end
